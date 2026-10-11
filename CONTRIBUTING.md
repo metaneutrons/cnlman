@@ -3,7 +3,7 @@
 ## Getting Started
 
 ```bash
-git clone git@github.com:metaneutrons/cnlman.git
+git clone https://github.com/metaneutrons/cnlman.git
 cd cnlman
 brew install lefthook gitleaks
 lefthook install

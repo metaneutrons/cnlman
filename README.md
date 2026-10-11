@@ -11,10 +11,10 @@ stderr, and distinct exit codes for "nothing arrived" and "nothing found".
 
 ## Installation
 
-The repository is private. With access:
+From source:
 
 ```bash
-cargo install --locked --git ssh://git@github.com/metaneutrons/cnlman.git
+cargo install --locked --git https://github.com/metaneutrons/cnlman.git
 ```
 
 ## Two ways to get a package
