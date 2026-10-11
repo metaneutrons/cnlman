@@ -1,0 +1,51 @@
+name: Bug report
+description: Report reproducible incorrect behavior in cnlman.
+title: "bug: "
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not report security vulnerabilities here. Use the private reporting
+        channel described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: cnlman version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15 arm64 or Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Give the command, and the page or request that triggers the issue, with links and keys removed.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed API keys, decrypted links and personal data from the report.
+          required: true
+        - label: I searched existing issues for the same behavior.
+          required: true

@@ -1,0 +1,31 @@
+# Patterns deliberately UNANCHORED, so that they bite at every level.
+# A leading slash would no longer match in a new subproject.
+
+target/
+**/*.rs.bk
+*.pdb
+
+# Coverage
+lcov.info
+coverage/
+*.profraw
+
+# Node, in case a subproject appears somewhere
+node_modules/
+dist/
+.pnpm-store/
+
+# Environment and state
+.env
+.env.*
+!.env.example
+*.log
+
+# Editor and operating system
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

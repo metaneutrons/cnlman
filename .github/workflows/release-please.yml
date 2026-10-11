@@ -1,0 +1,86 @@
+# The only automatic route by which a production tag comes about.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    # Per the non-negotiable rule the app credentials live exclusively in this
+    # environment. Without the declaration they are invisible to the job.
+    environment: release
+    steps:
+      # The release pull request MUST be created with an app token. GitHub
+      # suppresses workflow triggers from GITHUB_TOKEN pushes as recursion
+      # protection; CI would then never run on the release pull request and the
+      # required checks would stay pending. An app token is a genuine actor.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: rp
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Rust branch: release-please writes the version into Cargo.toml but
+      # does not touch Cargo.lock. In other languages these files are absent
+      # and the step ends successfully after the clone without a change.
+      # A regular pnpm-lock.yaml does not carry the package's own version; for
+      # project-specific generated lock metadata see release.md.
+      # The push goes exclusively to the pull request branch, never to main: no
+      # loop. With the app token the required checks are re-evaluated on the new
+      # head of the pull request.
+      - name: "Rust: synchronise Cargo.lock into the release pull request"
+        if: ${{ steps.rp.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_JSON: ${{ steps.rp.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch=$(printf '%s' "$PR_JSON" | jq -r .headBranchName)
+          git clone --branch "$branch" --depth 1 \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" rp-lock
+          cd rp-lock
+          if [[ ! -f Cargo.toml || ! -f Cargo.lock ]]; then
+            echo "No Rust lockfile; the Rust synchronisation does not apply."
+            exit 0
+          fi
+          rustup show
+          cargo update --workspace -q
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already matches the release version."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: sync Cargo.lock to the release version" -- Cargo.lock
+            git push origin "HEAD:$branch"
+          fi
+
+      # release.yml deliberately has NO tag trigger. This is the only
+      # automatic starting point; otherwise two pipelines would run in
+      # parallel.
+      - name: Start the release build for the new draft
+        if: ${{ steps.rp.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.rp.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG"
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
