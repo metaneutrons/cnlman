@@ -2,9 +2,9 @@
 //!
 //! A CNL2 package carries two values: `jk`, a JavaScript function whose return
 //! value is the AES key in hex, and `crypted`, the base64 ciphertext. The
-//! cipher is AES-128-CBC with the key doubling as the IV and no padding; the
-//! plaintext is the link list, separated by line breaks and padded with NUL
-//! bytes to the block size.
+//! cipher is AES-128-CBC with the key doubling as the IV. The plaintext is the
+//! link list, separated by line breaks and filled to the block size either
+//! with NUL bytes or, as filecrypt does, with PKCS#7 padding.
 
 use std::sync::LazyLock;
 
@@ -104,8 +104,30 @@ pub fn decrypt(jk: &str, crypted: &str) -> Result<Vec<String>, CryptoError> {
     let plain = Decryptor::new(&key.into(), &key.into())
         .decrypt_padded::<NoPadding>(&mut buf)
         .map_err(|_| CryptoError::BlockLength(len))?;
-    let text = std::str::from_utf8(plain).map_err(|_| CryptoError::NotUtf8)?;
+    let text = std::str::from_utf8(strip_pkcs7(plain)).map_err(|_| CryptoError::NotUtf8)?;
     Ok(split_links(text))
+}
+
+/// Removes PKCS#7 padding if the plaintext carries a valid one.
+///
+/// Senders disagree on padding: some fill the last block with NUL bytes,
+/// filecrypt uses PKCS#7. A valid PKCS#7 tail is `n` bytes of value `n`
+/// with `1 <= n <= 16`; link text never ends in such a run, so the check
+/// cannot cut into a link. Anything else is returned unchanged and NUL
+/// padding is left for [`split_links`].
+fn strip_pkcs7(plain: &[u8]) -> &[u8] {
+    let Some(&last) = plain.last() else {
+        return plain;
+    };
+    let n = usize::from(last);
+    if (1..=KEY_LEN).contains(&n)
+        && n <= plain.len()
+        && plain[plain.len() - n..].iter().all(|&b| b == last)
+    {
+        &plain[..plain.len() - n]
+    } else {
+        plain
+    }
 }
 
 /// Splits a decrypted or plain link list into individual links.
@@ -163,6 +185,37 @@ mod tests {
             links,
             ["https://example.org/smoke", "https://example.org/test"]
         );
+    }
+
+    /// Produced with `openssl enc -aes-128-cbc -K <key> -iv <key>` and its
+    /// default PKCS#7 padding, as filecrypt sends it. The first vector ends
+    /// in eight `0x08` bytes right after the last link, the second in a
+    /// whole block of `0x10`; neither pad byte is whitespace.
+    #[test]
+    fn strips_pkcs7_padding() {
+        let cases = [
+            (
+                "RnATJ+qxAkpHoFYfjZKfGIoMKq9yo6hLgc5BX1Qe/6qUNj/2AN1z0oQMNXP9K7qw/4DLUlSvGM+FQOs+zRM2jw==",
+                "https://example.org/test-pads",
+            ),
+            (
+                "RnATJ+qxAkpHoFYfjZKfGIoMKq9yo6hLgc5BX1Qe/6qUNj/2AN1z0oQMNXP9K7qwYjz/0yMKanc3rpOMm0gVmw==",
+                "https://example.org/t",
+            ),
+        ];
+        for (crypted, last) in cases {
+            let links = decrypt("30313233343536373839616263646566", crypted).unwrap();
+            assert_eq!(links, ["https://example.org/smoke", last]);
+        }
+    }
+
+    #[test]
+    fn plaintext_without_padding_is_kept() {
+        assert_eq!(strip_pkcs7(b"abc"), b"abc");
+        assert_eq!(strip_pkcs7(b"abc\0\0"), b"abc\0\0");
+        // The last byte claims more padding than the bytes before it hold.
+        assert_eq!(strip_pkcs7(b"ab\x03\x03"), b"ab\x03\x03");
+        assert_eq!(strip_pkcs7(b""), b"");
     }
 
     #[test]
