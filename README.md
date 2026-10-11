@@ -17,6 +17,20 @@ From source:
 cargo install --locked --git https://github.com/metaneutrons/cnlman.git
 ```
 
+Prebuilt binaries for Linux, macOS and Windows (x86_64 and ARM64) are
+attached to every [release](https://github.com/metaneutrons/cnlman/releases).
+Each archive comes with an SPDX SBOM (`.spdx.json`), a Sigstore bundle
+(`.sigstore.json`) and a GitHub build-provenance attestation. Verify an
+archive before use:
+
+```bash
+gh attestation verify cnlman-<tag>-<target>.tar.gz --repo metaneutrons/cnlman \
+  --signer-workflow metaneutrons/cnlman/.github/workflows/release.yml
+```
+
+The Windows executable is not Authenticode-signed yet, so SmartScreen may warn
+on first start; the attestation is the proof of origin.
+
 ## Two ways to get a package
 
 **Listen**, the way JDownloader does it. Start the listener, then press the
