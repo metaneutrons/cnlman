@@ -152,6 +152,19 @@ mod tests {
         assert_eq!(decrypt(&jk, &crypted).unwrap(), links);
     }
 
+    /// Produced independently with
+    /// `openssl enc -aes-128-cbc -K <key> -iv <key> -nopad` over the
+    /// NUL-padded plaintext; the release smoke test uses the same vector.
+    #[test]
+    fn decrypts_an_openssl_vector() {
+        let crypted = "RnATJ+qxAkpHoFYfjZKfGIoMKq9yo6hLgc5BX1Qe/6qUNj/2AN1z0oQMNXP9K7qwLHW2sRDDJb8R3VaX/+cC8Q==";
+        let links = decrypt("30313233343536373839616263646566", crypted).unwrap();
+        assert_eq!(
+            links,
+            ["https://example.org/smoke", "https://example.org/test"]
+        );
+    }
+
     #[test]
     fn bare_hex_key_is_accepted() {
         let (_, crypted) = encrypt(&["https://example.org/x"], KEY);
