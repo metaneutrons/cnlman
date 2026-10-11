@@ -11,10 +11,16 @@ name: Release
 #   2 build, package, source   native payloads, linkage check, clean smoke test
 #   3 sign       SPDX SBOM, cosign bundle and build provenance per payload
 #   4            exact payload set (inside sign)
-#   5 candidate  SHA256SUMS over exactly the candidate set, attested
+#   5 definitions, candidate   Homebrew formula from the qualified payloads,
+#                signed and attested; SHA256SUMS over exactly the candidate set
+#   6 qualify-homebrew, channel-qualify   install and test the formula from
+#                the local candidate bytes on macOS and Linux, x86_64 and ARM64
+#     preflight  stable tags only: the tap App reaches exactly the tap
 #   7 stage      upload to the draft, read back, verify, publish as prerelease
+#   8 publish-homebrew   stable tags only: tap pull request, tap
+#                qualification, merge, byte-for-byte read-back
 #   9 promote    stable tags only: the unchanged prerelease becomes latest
-# There is no package channel yet, so stages 6, 8 and 10 do not exist.
+# There is no downstream consumer, so stage 10 does not exist.
 
 on:
   workflow_dispatch:
@@ -299,8 +305,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  candidate:
-    name: Final candidate and checksums
+  definitions:
+    name: Generate, sign and attest the Homebrew formula
     needs: [metadata, sign]
     runs-on: ubuntu-24.04
     permissions:
@@ -314,6 +320,67 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: signed-payloads
+          path: payloads
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: The formula describes the signed bytes
+        env:
+          TAG: ${{ needs.metadata.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/inventory.py payloads --tag "$TAG" --directory payloads
+          mkdir -p definitions
+          python3 scripts/release/formula.py --tag "$TAG" --payload-dir payloads \
+            --output definitions/cnlman.rb
+          ruby -c definitions/cnlman.rb
+          urls=$(grep -Fc "https://github.com/${REPO}/releases/download/${TAG}/" definitions/cnlman.rb)
+          if [[ "$urls" -ne 4 ]]; then
+            echo "::error::the formula names $urls release URLs of $TAG instead of 4"
+            exit 1
+          fi
+          identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}"
+          cosign sign-blob --yes --bundle definitions/cnlman.rb.sigstore.json definitions/cnlman.rb
+          cosign verify-blob --bundle definitions/cnlman.rb.sigstore.json \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            definitions/cnlman.rb
+          python3 scripts/release/inventory.py definitions --tag "$TAG" --directory definitions
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: definitions/cnlman.rb
+      - name: Verify the formula's provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh attestation verify definitions/cnlman.rb --repo "$REPO" \
+            --signer-workflow "$REPO/.github/workflows/release.yml"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: channel-definitions
+          path: definitions/*
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate:
+    name: Final candidate and checksums
+    needs: [metadata, sign, definitions]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signed-payloads
+          path: candidate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: channel-definitions
           path: candidate
       - name: SHA256SUMS over exactly the candidate set
         env:
@@ -332,9 +399,173 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Stage 6. Runs for prerelease tags too, so a test tag qualifies it.
+  qualify-homebrew:
+    name: Install the formula on ${{ matrix.runner }}
+    needs: [metadata, candidate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, target: aarch64-apple-darwin }
+          - { runner: macos-15-intel, target: x86_64-apple-darwin }
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: final-candidate
+          path: candidate
+      - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
+        with:
+          core: false
+          cask: false
+      - name: Audit, install and test from the local candidate bytes
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_ENV_HINTS: '1'
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release/inventory.py verify --tag "$TAG" --directory candidate
+          # A fresh download cache: an archive cached under the same URL would
+          # otherwise be installed instead of the candidate's bytes.
+          export HOMEBREW_CACHE="$RUNNER_TEMP/homebrew-cache"
+          rm -rf "$HOMEBREW_CACHE"
+          mkdir -p "$HOMEBREW_CACHE"
+          port=38080
+          tap=cnlman/qualification
+          python3 -m http.server "$port" --bind 127.0.0.1 --directory candidate \
+            > "$RUNNER_TEMP/http.log" 2>&1 &
+          server=$!
+          cleanup() {
+            brew uninstall --force cnlman >/dev/null 2>&1 || true
+            brew untap "$tap" >/dev/null 2>&1 || true
+            kill "$server" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          up=false
+          for _ in $(seq 1 20); do
+            if curl --fail --silent --output /dev/null "http://127.0.0.1:$port/SHA256SUMS"; then
+              up=true
+              break
+            fi
+            sleep 1
+          done
+          [[ "$up" == true ]] || { echo "::error::the local server did not come up"; exit 1; }
+          brew tap-new --no-git "$tap"
+          formula="$(brew --repository "$tap")/Formula/cnlman.rb"
+          # Audit the formula exactly as it will be published ...
+          cp candidate/cnlman.rb "$formula"
+          brew audit --strict "$tap/cnlman"
+          # ... then install it against the local bytes of this candidate.
+          sed -E "s#https://github.com/[^\"]*/download/[^/\"]+#http://127.0.0.1:$port#g" \
+            candidate/cnlman.rb > "$formula"
+          test "$(grep -c "http://127.0.0.1:$port/cnlman-$TAG-" "$formula")" -eq 4
+          brew install --formula "$tap/cnlman"
+          brew test "$tap/cnlman"
+          installed="$(brew --prefix)/bin/cnlman"
+          [[ "$("$installed" --version)" == "cnlman $VERSION" ]]
+          grep -q "GET /cnlman-$TAG-$TARGET.tar.gz" "$RUNNER_TEMP/http.log"
+          # On macOS Homebrew installs the archive's binary unchanged
+          # (measured 11 October 2026); prove it byte for byte. Linuxbrew may
+          # rewrite the ELF interpreter, so there the fetched archive above is
+          # the evidence.
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            mkdir -p "$RUNNER_TEMP/archive"
+            tar -xzf "candidate/cnlman-$TAG-$TARGET.tar.gz" -C "$RUNNER_TEMP/archive"
+            cmp "$RUNNER_TEMP/archive/cnlman-$TAG-$TARGET/cnlman" "$installed"
+          fi
+
+  channel-qualify:
+    name: Every channel qualification passed
+    needs: [qualify-homebrew]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All installation tests succeeded
+        run: |
+          set -euo pipefail
+          printf '%s\n' '${{ toJSON(needs) }}' | jq -e 'all(.[]; .result == "success")'
+
+  # Stage 6, stable tags only: nothing public happens before the tap
+  # credential is proven to reach exactly the tap, and nothing else.
+  preflight:
+    name: The tap App reaches exactly the tap
+    needs: [metadata]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    environment: release
+    env:
+      TAP_REPO: metaneutrons/homebrew-tap
+    steps:
+      # Homebrew is a mandatory channel for cnlman: a missing value is a
+      # mistake, not a choice.
+      - name: Configuration is complete
+        env:
+          HOMEBREW_APP_CLIENT_ID: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          HOMEBREW_APP_PRIVATE_KEY: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          status=0
+          for name in HOMEBREW_APP_CLIENT_ID HOMEBREW_APP_PRIVATE_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::missing release configuration: $name"
+              status=1
+            fi
+          done
+          exit "$status"
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: metaneutrons
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
+          permission-administration: read
+      - name: Reach, bot identity and tap protection
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          reached=$(gh api installation/repositories --jq '[.repositories[].full_name] | sort | join(",")')
+          if [[ "$reached" != "$TAP_REPO" ]]; then
+            echo "::error::the token reaches '$reached' instead of exactly $TAP_REPO"
+            exit 1
+          fi
+          gh api "users/metaneutrons-homebrew%5Bbot%5D" --jq '"bot \(.login) \(.id)"'
+          contexts=$(gh api "repos/$TAP_REPO/branches/main/protection" \
+            --jq '[.required_status_checks.contexts[]] | join(",")')
+          if [[ ",$contexts," != *",Formula qualification,"* ]]; then
+            echo "::error::'Formula qualification' is not required on $TAP_REPO (now: $contexts)"
+            exit 1
+          fi
+
   stage:
     name: Stage and read back the prerelease
-    needs: [metadata, candidate]
+    needs: [metadata, candidate, channel-qualify, preflight]
+    if: >-
+      !cancelled()
+      && needs.metadata.result == 'success'
+      && needs.candidate.result == 'success'
+      && needs.channel-qualify.result == 'success'
+      && (
+        (needs.metadata.outputs.is_prerelease == 'true'
+          && needs.preflight.result == 'skipped')
+        || (needs.metadata.outputs.is_prerelease == 'false'
+          && needs.preflight.result == 'success')
+      )
     runs-on: ubuntu-24.04
     # The environment admits only main and v* tags; no secret is read here.
     environment: release
@@ -383,6 +614,13 @@ jobs:
           done < "$RUNNER_TEMP/payloads.txt"
           gh attestation verify "$readback/SHA256SUMS" --repo "$GH_REPO" \
             --signer-workflow "$GH_REPO/.github/workflows/release.yml"
+          cmp candidate/cnlman.rb "$readback/cnlman.rb"
+          cosign verify-blob --bundle "$readback/cnlman.rb.sigstore.json" \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$readback/cnlman.rb"
+          gh attestation verify "$readback/cnlman.rb" --repo "$GH_REPO" \
+            --signer-workflow "$GH_REPO/.github/workflows/release.yml"
       - name: Publish as prerelease, never as latest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -399,9 +637,200 @@ jobs:
             exit 1
           fi
 
+  # Stage 8, stable tags only. Never pushes to the tap's main: the formula
+  # reaches it through a pull request that the tap's own qualification gates.
+  publish-homebrew:
+    name: Publish the formula to the tap and read it back
+    needs: [metadata, stage]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    environment: release
+    # The tap qualification takes about ten minutes; the waits below are
+    # bounded well inside the one-hour lifetime of the first token.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      TAP_REPO: metaneutrons/homebrew-tap
+      TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - name: Fetch the published formula and prove its origin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # The repository token reads this repository's release only, never
+          # the tap. The formula is not generated again here.
+          gh release download "$TAG" --pattern cnlman.rb --dir "$RUNNER_TEMP/release"
+          formula="$RUNNER_TEMP/release/cnlman.rb"
+          gh attestation verify "$formula" --repo "$GH_REPO" \
+            --signer-workflow "$GH_REPO/.github/workflows/release.yml"
+          urls=$(grep -Fc "https://github.com/${GH_REPO}/releases/download/${TAG}/" "$formula")
+          [[ "$urls" -eq 4 ]] || { echo "::error::the formula names $urls URLs of $TAG"; exit 1; }
+          cp "$formula" "$RUNNER_TEMP/formula.rb"
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: metaneutrons
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
+          permission-administration: read
+      - name: Measure the installation and the bot
+        id: identity
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          reached=$(gh api installation/repositories --jq '[.repositories[].full_name] | sort | join(",")')
+          if [[ "$reached" != "$TAP_REPO" ]]; then
+            echo "::error::the token reaches '$reached' instead of exactly $TAP_REPO"
+            exit 1
+          fi
+          # /user does not apply to an installation token; the bot's public
+          # endpoint gives the identity for git authorship.
+          read -r login id < <(gh api "users/metaneutrons-homebrew%5Bbot%5D" --jq '"\(.login) \(.id)"')
+          {
+            echo "bot_login=$login"
+            echo "bot_email=${id}+${login}@users.noreply.github.com"
+          } >> "$GITHUB_OUTPUT"
+      - name: Branch, commit and open the tap pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          BOT_LOGIN: ${{ steps.identity.outputs.bot_login }}
+          BOT_EMAIL: ${{ steps.identity.outputs.bot_email }}
+        run: |
+          set -euo pipefail
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${TAP_REPO}.git" tap
+          install -m 0644 "$RUNNER_TEMP/formula.rb" tap/Formula/cnlman.rb
+          cd tap
+          # The tap checks that README.md is generated from the formulas.
+          scripts/generate-readme.sh README.md
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "::notice::the tap already carries this formula"
+            echo "unchanged=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="cnlman-${VERSION}"
+          git config user.name "$BOT_LOGIN"
+          git config user.email "$BOT_EMAIL"
+          git checkout -b "$branch"
+          git add Formula/cnlman.rb README.md
+          git commit -m "cnlman ${VERSION}"
+          git push --force-with-lease origin "$branch"
+          head=$(git rev-parse HEAD)
+          pr=$(gh pr list --repo "$TAP_REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [[ -z "$pr" ]]; then
+            url=$(gh pr create --repo "$TAP_REPO" --base main --head "$branch" \
+              --title "cnlman ${VERSION}" \
+              --body "Formula from the attested release ${TAG} of ${GITHUB_REPOSITORY}.")
+            pr=${url##*/}
+          fi
+          [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::no pull request number for $branch"; exit 1; }
+          {
+            echo "unchanged=false"
+            echo "number=$pr"
+            echo "head=$head"
+          } >> "$GITHUB_OUTPUT"
+      - name: Wait for the tap qualification
+        if: steps.pr.outputs.unchanged == 'false'
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          # First wait until the tap has registered a check at all; `gh pr
+          # checks` fails on a pull request without any. "Not yet" and "the
+          # API did not answer" are kept apart, and the loop carries its end.
+          delay=20 deadline=$(( SECONDS + 300 ))
+          while :; do
+            if ! n=$(gh pr view "$PR" --repo "$TAP_REPO" --json statusCheckRollup --jq '.statusCheckRollup | length' 2>&1); then
+              printf '::error::the API did not answer: %s\n' "$n"
+              exit 1
+            fi
+            [[ "$n" -gt 0 ]] && break
+            (( SECONDS > deadline )) && { echo "::error::the tap registered no check within five minutes"; exit 1; }
+            sleep "$delay"
+            delay=$(( delay < 60 ? delay * 2 : 60 ))
+          done
+          set +e
+          timeout 2700 gh pr checks "$PR" --repo "$TAP_REPO" --watch --fail-fast --interval 60
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "::notice::the tap qualification passed" ;;
+            124) echo "::error::the tap qualification was not finished after 45 minutes"; exit 1 ;;
+            *) echo "::error::the tap qualification ended with exit $rc"; exit 1 ;;
+          esac
+      # A fresh token after the wait: the merge is the last and most
+      # expensive write, and the first token may be close to expiry.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: merge-token
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: metaneutrons
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+          permission-actions: read
+          permission-administration: read
+      - name: Re-check head, required check and protection, then merge
+        if: steps.pr.outputs.unchanged == 'false'
+        env:
+          GH_TOKEN: ${{ steps.merge-token.outputs.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          EXPECTED_HEAD: ${{ steps.pr.outputs.head }}
+        run: |
+          set -euo pipefail
+          reached=$(gh api installation/repositories --jq '[.repositories[].full_name] | sort | join(",")')
+          [[ "$reached" == "$TAP_REPO" ]] || { echo "::error::the second token reaches '$reached'"; exit 1; }
+          head=$(gh pr view "$PR" --repo "$TAP_REPO" --json headRefOid --jq .headRefOid)
+          if [[ "$head" != "$EXPECTED_HEAD" ]]; then
+            echo "::error::the pull request head is $head, but $EXPECTED_HEAD was pushed"
+            exit 1
+          fi
+          contexts=$(gh api "repos/$TAP_REPO/branches/main/protection" \
+            --jq '[.required_status_checks.contexts[]] | join(",")')
+          if [[ ",$contexts," != *",Formula qualification,"* ]]; then
+            echo "::error::'Formula qualification' is no longer required on $TAP_REPO (now: $contexts)"
+            exit 1
+          fi
+          state=$(gh pr view "$PR" --repo "$TAP_REPO" --json statusCheckRollup \
+            --jq '[.statusCheckRollup[] | select(.name == "Formula qualification")] | last
+                  | if . == null then "absent none"
+                    else "\((.status // "absent") | ascii_downcase) \((.conclusion // "none") | ascii_downcase)" end')
+          if [[ "$state" != "completed success" ]]; then
+            echo "::error::'Formula qualification' is '$state' instead of completed success"
+            exit 1
+          fi
+          # Merges only the commit that was qualified.
+          gh pr merge "$PR" --repo "$TAP_REPO" --squash --delete-branch --match-head-commit "$EXPECTED_HEAD"
+      - name: Read the formula back from the tap's main
+        env:
+          GH_TOKEN: ${{ steps.merge-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$TAP_REPO/contents/Formula/cnlman.rb?ref=main" --jq .content \
+            | base64 --decode > "$RUNNER_TEMP/published.rb"
+          # Byte for byte, between two files: a command substitution would
+          # strip the trailing newline from one side only.
+          cmp "$RUNNER_TEMP/published.rb" "$RUNNER_TEMP/formula.rb"
+          echo "::notice::the tap carries exactly the attested formula of $TAG"
+
   promote:
     name: Promote the unchanged prerelease to latest
-    needs: [metadata, stage]
+    needs: [metadata, stage, publish-homebrew]
     if: needs.metadata.outputs.is_prerelease == 'false'
     runs-on: ubuntu-24.04
     environment: release

@@ -4,8 +4,9 @@
 Every stage of the release pipeline asks this script what it expects instead
 of keeping its own list of file names or counts:
 
-  raw       the directory holds exactly the payloads
-  payloads  ... and exactly one SBOM and one signature bundle per payload
+  raw          the directory holds exactly the payloads
+  payloads     ... and exactly one SBOM and one signature bundle per payload
+  definitions  exactly the channel definitions, each with a signature bundle
   write     write SHA256SUMS over exactly the candidate set
   verify    the directory is the candidate set plus SHA256SUMS, and every
             checksum matches
@@ -32,6 +33,9 @@ WINDOWS_TARGETS = (
     "aarch64-pc-windows-msvc",
 )
 SUMS = "SHA256SUMS"
+# Channel definitions generated from the qualified payloads. They are signed
+# and attested but get no SBOM of their own.
+DEFINITIONS = ("cnlman.rb",)
 TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$")
 
 
@@ -48,11 +52,19 @@ def payloads(tag: str) -> list[str]:
     return sorted(names)
 
 
-def candidate(tag: str) -> list[str]:
+def signed_payloads(tag: str) -> list[str]:
     names = []
     for payload in payloads(tag):
         names += [payload, f"{payload}.spdx.json", f"{payload}.sigstore.json"]
     return sorted(names)
+
+
+def definitions() -> list[str]:
+    return sorted(n for d in DEFINITIONS for n in (d, f"{d}.sigstore.json"))
+
+
+def candidate(tag: str) -> list[str]:
+    return sorted(signed_payloads(tag) + definitions())
 
 
 def present(directory: pathlib.Path) -> set[str]:
@@ -112,7 +124,9 @@ def verify(directory: pathlib.Path, tag: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=["raw", "payloads", "write", "verify", "list"])
+    parser.add_argument(
+        "command", choices=["raw", "payloads", "definitions", "write", "verify", "list"]
+    )
     parser.add_argument("--tag", required=True)
     parser.add_argument("--directory", type=pathlib.Path, default=pathlib.Path("."))
     args = parser.parse_args(argv)
@@ -122,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "raw":
             require_exact(args.directory, payloads(args.tag))
         elif args.command == "payloads":
-            require_exact(args.directory, candidate(args.tag))
+            require_exact(args.directory, signed_payloads(args.tag))
+        elif args.command == "definitions":
+            require_exact(args.directory, definitions())
         elif args.command == "write":
             write_sums(args.directory, args.tag)
         else:
