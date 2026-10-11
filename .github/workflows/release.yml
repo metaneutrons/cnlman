@@ -28,6 +28,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # cargo auditable embeds the resolved dependency list in each binary; syft
+  # reads it back, so the SBOM describes the real crate graph.
+  # Keep in step with the sbom job in ci.yml.
+  CARGO_AUDITABLE_VERSION: '0.7.7'
 
 jobs:
   metadata:
@@ -101,10 +105,11 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show
-      - name: Build
+      - name: Build with the dependency list embedded
         run: |
           set -euo pipefail
-          cargo build --release --locked
+          cargo install --locked cargo-auditable --version "$CARGO_AUDITABLE_VERSION"
+          cargo auditable build --release --locked
           mkdir -p native
           cp target/release/cnlman native/cnlman
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -148,7 +153,8 @@ jobs:
         run: |
           set -euo pipefail
           rustup show
-          cargo build --release --locked
+          cargo install --locked cargo-auditable --version "$CARGO_AUDITABLE_VERSION"
+          cargo auditable build --release --locked
           mkdir -p native
           if [[ '${{ matrix.os }}' == windows ]]; then
             cp target/release/cnlman.exe native/cnlman
@@ -257,6 +263,12 @@ jobs:
           python3 scripts/release/inventory.py list --tag "$TAG" > "$RUNNER_TEMP/payloads.txt"
           while IFS= read -r payload; do
             syft scan "file:payloads/$payload" -o spdx-json="payloads/$payload.spdx.json"
+            # Binary archives must describe the locked crate graph; the
+            # source archive carries Cargo.lock itself.
+            case "$payload" in
+              *-source.tar.gz) ;;
+              *) python3 scripts/release/sbom_gate.py "payloads/$payload.spdx.json" ;;
+            esac
             cosign sign-blob --yes --bundle "payloads/$payload.sigstore.json" "payloads/$payload"
             cosign verify-blob --bundle "payloads/$payload.sigstore.json" \
               --certificate-identity "$identity" \

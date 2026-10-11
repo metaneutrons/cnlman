@@ -77,6 +77,39 @@ jobs:
         if: matrix.name == 'linux-x86_64'
         run: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 80
 
+  sbom:
+    name: SBOM describes the crate graph
+    runs-on: ubuntu-24.04
+    env:
+      # Keep in step with CARGO_AUDITABLE_VERSION in release.yml.
+      CARGO_AUDITABLE_VERSION: '0.7.7'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+      - name: Auditable build passes the gate, a plain build fails it
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-auditable --version "$CARGO_AUDITABLE_VERSION"
+          epoch=$(git show -s --format=%ct HEAD)
+          probe() {
+            mkdir -p "$1"
+            cp target/release/cnlman "$1/cnlman"
+            archive=$(python3 scripts/release/package.py --tag v0.0.0 \
+              --target x86_64-unknown-linux-gnu --binary "$1/cnlman" \
+              --output-dir "$1" --source-date-epoch "$epoch")
+            syft scan "file:$archive" -o spdx-json="$archive.spdx.json"
+            python3 scripts/release/sbom_gate.py "$archive.spdx.json"
+          }
+          cargo auditable build --release --locked
+          probe "$RUNNER_TEMP/auditable"
+          cargo build --release --locked
+          if probe "$RUNNER_TEMP/plain"; then
+            echo "::error::the gate accepted the SBOM of a binary without dependency data"
+            exit 1
+          fi
+
   commit-hygiene:
     name: Commit hygiene
     if: github.event_name == 'pull_request'
@@ -163,7 +196,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [quality, test, secrets, commit-hygiene]
+    needs: [quality, test, sbom, secrets, commit-hygiene]
     runs-on: ubuntu-24.04
     steps:
       - name: Every preceding job must have succeeded or been skipped
