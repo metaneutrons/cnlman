@@ -44,7 +44,9 @@ class Inventory(unittest.TestCase):
         inventory.write_sums(self.dir, TAG)
         inventory.verify(self.dir, TAG)
         lines = (self.dir / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(lines), 21)
+        # 7 payloads with SBOM and bundle, plus the formula and its bundle.
+        self.assertEqual(len(lines), 23)
+        self.assertTrue(any(line.endswith("  cnlman.rb") for line in lines))
 
     def test_missing_extra_and_empty_files_fail(self) -> None:
         names = inventory.candidate(TAG)
@@ -76,6 +78,19 @@ class Inventory(unittest.TestCase):
         sums.write_text("".join(sums.read_text().splitlines(keepends=True)[1:]))
         with self.assertRaisesRegex(inventory.InventoryError, "exactly"):
             inventory.verify(self.dir, TAG)
+
+    def test_sign_stage_set_excludes_the_definitions(self) -> None:
+        fill(self.dir, inventory.signed_payloads(TAG))
+        inventory.require_exact(self.dir, inventory.signed_payloads(TAG))
+        fill(self.dir, ["cnlman.rb"])
+        with self.assertRaisesRegex(inventory.InventoryError, "unexpected: cnlman.rb"):
+            inventory.require_exact(self.dir, inventory.signed_payloads(TAG))
+
+    def test_candidate_without_the_formula_bundle_fails(self) -> None:
+        names = [n for n in inventory.candidate(TAG) if n != "cnlman.rb.sigstore.json"]
+        fill(self.dir, names)
+        with self.assertRaisesRegex(inventory.InventoryError, "missing: cnlman.rb.sigstore.json"):
+            inventory.write_sums(self.dir, TAG)
 
     def test_raw_stage_accepts_only_payloads(self) -> None:
         fill(self.dir, inventory.payloads(TAG))

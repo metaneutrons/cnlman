@@ -11,6 +11,12 @@ stderr, and distinct exit codes for "nothing arrived" and "nothing found".
 
 ## Installation
 
+With Homebrew on macOS or Linux, from the first stable release on:
+
+```bash
+brew install metaneutrons/tap/cnlman
+```
+
 From source:
 
 ```bash
