@@ -42,6 +42,11 @@ jobs:
           chmod +x "$RUNNER_TEMP/lefthook"
           "$RUNNER_TEMP/lefthook" validate
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Release helper probes
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+          bash -n scripts/release/smoke.sh
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: cargo-deny
