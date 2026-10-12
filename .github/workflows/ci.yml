@@ -56,14 +56,13 @@ jobs:
     name: Tests (${{ matrix.name }})
     strategy:
       fail-fast: false
+      # macOS and Windows run only in the release pipeline, which builds and
+      # smoke-tests all six targets before anything is published. Their
+      # runners queue for long stretches and held up every pull request.
       matrix:
         include:
           - { name: linux-x86_64,  runner: ubuntu-24.04 }
           - { name: linux-aarch64, runner: ubuntu-24.04-arm }
-          - { name: macos-x86_64,  runner: macos-15-intel }
-          - { name: macos-aarch64, runner: macos-15 }
-          - { name: windows-x86_64, runner: windows-2025 }
-          - { name: windows-aarch64, runner: windows-11-arm }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
