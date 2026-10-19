@@ -420,7 +420,7 @@ jobs:
         with:
           name: final-candidate
           path: candidate
-      - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
+      - uses: Homebrew/actions/setup-homebrew@eb02c69dbabdb66ff183c614f4ce7ab3c077592c # 2026.10.12.1
         with:
           core: false
           cask: false
@@ -521,7 +521,7 @@ jobs:
             fi
           done
           exit "$status"
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: tap-token
         with:
           client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
@@ -670,7 +670,7 @@ jobs:
           urls=$(grep -Fc "https://github.com/${GH_REPO}/releases/download/${TAG}/" "$formula")
           [[ "$urls" -eq 4 ]] || { echo "::error::the formula names $urls URLs of $TAG"; exit 1; }
           cp "$formula" "$RUNNER_TEMP/formula.rb"
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: tap-token
         with:
           client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
@@ -772,7 +772,7 @@ jobs:
           esac
       # A fresh token after the wait: the merge is the last and most
       # expensive write, and the first token may be close to expiry.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: merge-token
         with:
           client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
