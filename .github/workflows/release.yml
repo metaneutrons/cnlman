@@ -460,6 +460,11 @@ jobs:
           done
           [[ "$up" == true ]] || { echo "::error::the local server did not come up"; exit 1; }
           brew tap-new --no-git "$tap"
+          # Homebrew refuses to load anything from a tap it was not told to
+          # trust. This tap is created here, empty, moments before and holds
+          # only the candidate, so trusting it as a whole does not extend to
+          # any other tap.
+          brew trust --tap "$tap"
           formula="$(brew --repository "$tap")/Formula/cnlman.rb"
           # Audit the formula exactly as it will be published ...
           cp candidate/cnlman.rb "$formula"
