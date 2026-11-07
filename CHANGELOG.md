@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/metaneutrons/cnlman/compare/v0.2.0...v0.2.1) (2026-11-07)
+
+
+### Bug Fixes
+
+* **deps:** update rustls, rustls-webpki and webpki-roots past their advisories ([#17](https://github.com/metaneutrons/cnlman/issues/17)) ([fac8c35](https://github.com/metaneutrons/cnlman/commit/fac8c3583bc84b953a5fd3551141948d461099a0))
+
 ## [0.2.0](https://github.com/metaneutrons/cnlman/compare/v0.1.0...v0.2.0) (2026-10-11)
 
 
